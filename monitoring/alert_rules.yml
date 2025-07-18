@@ -1,0 +1,128 @@
+# MicroRadar 告警规则
+
+groups:
+  - name: microradar.rules
+    rules:
+      # MicroRadar 服务状态告警
+      - alert: MicroRadarDown
+        expr: up{job="microradar"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MicroRadar 服务不可用"
+          description: "MicroRadar 服务已停止运行超过 1 分钟"
+
+      # 容器 CPU 使用率告警
+      - alert: ContainerHighCPU
+        expr: microradar_container_cpu_percent > 80
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "容器 CPU 使用率过高"
+          description: "容器 {{ $labels.container_name }} CPU 使用率为 {{ $value }}%，超过 80% 阈值"
+
+      # 容器内存使用率告警
+      - alert: ContainerHighMemory
+        expr: microradar_container_memory_percent > 85
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "容器内存使用率过高"
+          description: "容器 {{ $labels.container_name }} 内存使用率为 {{ $value }}%，超过 85% 阈值"
+
+      # 网络延迟告警
+      - alert: ContainerHighNetworkLatency
+        expr: microradar_container_network_latency_ms > 50
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "容器网络延迟过高"
+          description: "容器 {{ $labels.container_name }} 网络延迟为 {{ $value }}ms，超过 50ms 阈值"
+
+      # MicroRadar 内存使用告警
+      - alert: MicroRadarHighMemory
+        expr: microradar_memory_usage_bytes > 50 * 1024 * 1024  # 50MB
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MicroRadar 内存使用过高"
+          description: "MicroRadar 内存使用为 {{ $value | humanize1024 }}B，超过 50MB 限制"
+
+      # 监控容器数量告警
+      - alert: TooManyContainers
+        expr: microradar_containers_total > 500
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "监控容器数量过多"
+          description: "当前监控 {{ $value }} 个容器，可能影响性能"
+
+      # eBPF Maps 数量异常
+      - alert: EBPFMapsCountAbnormal
+        expr: rate(microradar_containers_total[5m]) == 0 and microradar_containers_total > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "eBPF Maps 可能异常"
+          description: "eBPF Maps 数据更新停止，可能存在问题"
+
+  - name: system.rules
+    rules:
+      # 系统负载告警
+      - alert: HighSystemLoad
+        expr: node_load1 > 4
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "系统负载过高"
+          description: "系统 1 分钟负载为 {{ $value }}，超过 4.0"
+
+      # 磁盘空间告警
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 < 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "磁盘空间不足"
+          description: "磁盘 {{ $labels.mountpoint }} 可用空间仅剩 {{ $value }}%"
+
+      # 内存使用率告警
+      - alert: HighMemoryUsage
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "系统内存使用率过高"
+          description: "系统内存使用率为 {{ $value }}%，超过 90%"
+
+  - name: docker.rules
+    rules:
+      # Docker 守护进程状态
+      - alert: DockerDaemonDown
+        expr: up{job="docker-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Docker 守护进程不可用"
+          description: "Docker 守护进程已停止运行"
+
+      # 容器重启频率过高
+      - alert: ContainerRestartingTooOften
+        expr: rate(docker_container_restarts_total[1h]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "容器重启频率过高"
+          description: "容器 {{ $labels.name }} 在过去 1 小时内重启了 {{ $value }} 次"

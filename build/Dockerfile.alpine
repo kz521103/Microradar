@@ -1,0 +1,93 @@
+# MicroRadar Alpine Docker 镜像
+# 目标: ≤10MB 镜像大小
+
+# 第一阶段: 构建阶段
+FROM golang:1.21.4-alpine AS builder
+
+# 安装构建依赖
+RUN apk add --no-cache \
+    git \
+    make \
+    clang \
+    llvm \
+    linux-headers \
+    libbpf-dev
+
+# 设置工作目录
+WORKDIR /build
+
+# 复制 Go 模块文件
+COPY go.mod go.sum ./
+RUN go mod download
+
+# 复制源代码
+COPY . .
+
+# 编译 eBPF 程序
+RUN make build-ebpf
+
+# 构建 Go 程序
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-s -w -extldflags '-static'" \
+    -a -installsuffix cgo \
+    -o micro-radar \
+    ./cmd/micro-radar
+
+# 验证二进制文件
+RUN ls -la micro-radar && \
+    file micro-radar && \
+    ./micro-radar --version
+
+# 第二阶段: 运行阶段
+FROM alpine:3.18
+
+# 安装运行时依赖
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata && \
+    # 创建非特权用户
+    addgroup -g 1000 microradar && \
+    adduser -D -s /bin/sh -u 1000 -G microradar microradar
+
+# 设置时区
+ENV TZ=UTC
+
+# 创建必要目录
+RUN mkdir -p /app/config /app/logs && \
+    chown -R microradar:microradar /app
+
+# 从构建阶段复制二进制文件
+COPY --from=builder /build/micro-radar /app/micro-radar
+COPY --from=builder /build/build/ebpf/*.o /app/ebpf/
+
+# 设置权限
+RUN chmod +x /app/micro-radar
+
+# 切换到非特权用户
+USER microradar
+
+# 设置工作目录
+WORKDIR /app
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD /app/micro-radar --version || exit 1
+
+# 暴露端口 (守护进程模式)
+EXPOSE 8080
+
+# 设置入口点
+ENTRYPOINT ["/app/micro-radar"]
+
+# 默认参数
+CMD ["--config", "/app/config/config.yaml", "--daemon"]
+
+# 镜像元数据
+LABEL maintainer="MicroRadar Team" \
+      version="1.0.0" \
+      description="轻量级容器监控工具" \
+      org.opencontainers.image.title="MicroRadar" \
+      org.opencontainers.image.description="轻量级容器监控工具，基于eBPF技术" \
+      org.opencontainers.image.version="1.0.0" \
+      org.opencontainers.image.vendor="MicroRadar" \
+      org.opencontainers.image.licenses="MIT"

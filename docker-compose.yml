@@ -1,0 +1,224 @@
+# MicroRadar Docker Compose 配置
+# 用于开发、测试和生产部署
+
+version: '3.8'
+
+services:
+  # MicroRadar 主服务
+  microradar:
+    build:
+      context: .
+      dockerfile: build/Dockerfile.alpine
+      args:
+        VERSION: ${VERSION:-1.0.0}
+        COMMIT: ${COMMIT:-unknown}
+        BUILD_TIME: ${BUILD_TIME:-unknown}
+    image: microradar:${VERSION:-latest}
+    container_name: microradar
+    restart: unless-stopped
+    
+    # 网络配置
+    network_mode: host
+    
+    # 权限配置 (eBPF 需要特权模式)
+    privileged: true
+    pid: host
+    
+    # 卷挂载
+    volumes:
+      # Docker socket (监控 Docker 容器)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      
+      # containerd socket (监控 containerd 容器)
+      - /run/containerd/containerd.sock:/run/containerd/containerd.sock:ro
+      
+      # CRI-O socket (监控 CRI-O 容器)
+      - /var/run/crio/crio.sock:/var/run/crio/crio.sock:ro
+      
+      # 系统目录 (eBPF 需要)
+      - /sys:/sys:ro
+      - /proc:/proc:ro
+      - /dev:/dev:ro
+      
+      # 配置文件
+      - ./config:/app/config:ro
+      
+      # 日志目录
+      - ./logs:/app/logs
+    
+    # 环境变量
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - CONFIG_FILE=/app/config/config.yaml
+      - DAEMON_MODE=true
+    
+    # 端口映射 (守护进程模式)
+    ports:
+      - "8080:8080"   # HTTP API
+      - "9090:9090"   # Prometheus metrics
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "/app/microradar", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 64M      # 稍高于 48MB 限制，留出缓冲
+          cpus: '0.1'      # 10% CPU 限制
+        reservations:
+          memory: 32M
+          cpus: '0.05'
+    
+    # 标签
+    labels:
+      - "com.microradar.service=main"
+      - "com.microradar.version=${VERSION:-1.0.0}"
+
+  # Prometheus (可选，用于指标收集)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: microradar-prometheus
+    restart: unless-stopped
+    
+    ports:
+      - "9091:9090"
+    
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    
+    depends_on:
+      - microradar
+    
+    profiles:
+      - monitoring
+
+  # Grafana (可选，用于可视化)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: microradar-grafana
+    restart: unless-stopped
+    
+    ports:
+      - "3000:3000"
+    
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    
+    depends_on:
+      - prometheus
+    
+    profiles:
+      - monitoring
+
+  # 测试容器 (用于测试监控功能)
+  test-web:
+    image: nginx:alpine
+    container_name: microradar-test-web
+    restart: unless-stopped
+    
+    ports:
+      - "8081:80"
+    
+    # 资源限制 (用于测试告警)
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.5'
+    
+    profiles:
+      - testing
+
+  test-db:
+    image: postgres:alpine
+    container_name: microradar-test-db
+    restart: unless-stopped
+    
+    environment:
+      - POSTGRES_DB=testdb
+      - POSTGRES_USER=testuser
+      - POSTGRES_PASSWORD=testpass
+    
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.3'
+    
+    profiles:
+      - testing
+
+  test-redis:
+    image: redis:alpine
+    container_name: microradar-test-redis
+    restart: unless-stopped
+    
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.2'
+    
+    profiles:
+      - testing
+
+# 网络配置
+networks:
+  default:
+    name: microradar-network
+    driver: bridge
+
+# 卷配置
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  postgres_data:
+    driver: local
+
+# 扩展配置
+x-common-variables: &common-variables
+  VERSION: ${VERSION:-1.0.0}
+  COMMIT: ${COMMIT:-unknown}
+  BUILD_TIME: ${BUILD_TIME:-unknown}
+
+# 配置模板
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# 应用默认日志配置
+x-default-service: &default-service
+  logging: *default-logging
+  restart: unless-stopped
